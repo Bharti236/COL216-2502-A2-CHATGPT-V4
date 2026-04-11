@@ -1,0 +1,5 @@
+.A: 0
+addi x1 x0 55
+addi x2 x0 1024
+sw x1 A(x2)
+addi x3 x0 1

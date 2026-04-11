@@ -1,0 +1,13 @@
+.OUT: 0 0 0 0
+addi x0 x0 9
+addi x1 x0 5
+add x0 x1 x1
+add x2 x0 x1
+sub x3 x1 x0
+sw x0 OUT(x0)
+addi x5 x0 1
+sw x1 OUT(x5)
+addi x5 x0 2
+sw x2 OUT(x5)
+addi x5 x0 3
+sw x3 OUT(x5)

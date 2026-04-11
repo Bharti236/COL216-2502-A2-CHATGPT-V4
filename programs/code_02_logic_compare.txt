@@ -1,0 +1,27 @@
+.OUT: 0 0 0 0 0 0 0 0
+addi x1 x0 10
+addi x2 x0 12
+addi x5 x0 -3
+and x3 x1 x2
+or x4 x1 x2
+xor x6 x1 x2
+andi x7 x1 3
+ori x8 x1 1
+xori x9 x2 10
+slt x10 x5 x1
+slti x11 x1 5
+sw x3 OUT(x0)
+addi x12 x0 1
+sw x4 OUT(x12)
+addi x12 x0 2
+sw x6 OUT(x12)
+addi x12 x0 3
+sw x7 OUT(x12)
+addi x12 x0 4
+sw x8 OUT(x12)
+addi x12 x0 5
+sw x9 OUT(x12)
+addi x12 x0 6
+sw x10 OUT(x12)
+addi x12 x0 7
+sw x11 OUT(x12)

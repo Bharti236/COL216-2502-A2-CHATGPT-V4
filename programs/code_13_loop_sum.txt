@@ -1,0 +1,12 @@
+.ARR: 3 1 4 1 5
+.OUT: 0 0
+addi x1 x0 0
+addi x2 x0 5
+addi x3 x0 0
+lw x4 ARR(x1)
+add x3 x3 x4
+addi x1 x1 1
+blt x1 x2 3
+sw x3 OUT(x0)
+addi x5 x0 1
+sw x1 OUT(x5)

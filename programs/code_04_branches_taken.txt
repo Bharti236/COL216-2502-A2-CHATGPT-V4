@@ -1,0 +1,24 @@
+.OUT: 0 0 0 0
+addi x1 x0 5
+addi x2 x0 5
+addi x3 x0 2
+addi x4 x0 7
+beq x1 x2 6
+addi x10 x0 99
+addi x10 x0 1
+sw x10 OUT(x0)
+bne x1 x3 10
+addi x11 x0 99
+addi x11 x0 1
+addi x12 x0 1
+sw x11 OUT(x12)
+blt x3 x4 15
+addi x13 x0 99
+addi x13 x0 1
+addi x12 x0 2
+sw x13 OUT(x12)
+ble x2 x1 20
+addi x14 x0 99
+addi x14 x0 1
+addi x12 x0 3
+sw x14 OUT(x12)

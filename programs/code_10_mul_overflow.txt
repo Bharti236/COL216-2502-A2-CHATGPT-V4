@@ -1,0 +1,8 @@
+.X: 50000
+.Y: 50000
+.OUT: 0
+lw x1 X(x0)
+lw x2 Y(x0)
+mul x3 x1 x2
+sw x3 OUT(x0)
+addi x4 x0 9

@@ -1,0 +1,7 @@
+.MAX: 2147483647
+.OUT: 0
+lw x1 MAX(x0)
+addi x2 x0 1
+add x3 x1 x2
+sw x3 OUT(x0)
+addi x4 x0 7

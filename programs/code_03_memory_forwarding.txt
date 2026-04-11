@@ -1,0 +1,16 @@
+.SRC: 5 7 9 11
+.DST: 0 0 0 0
+.TMP: 0
+lw x1 SRC(x0)
+addi x2 x0 2
+lw x3 SRC(x2)
+add x4 x1 x3
+sw x4 TMP(x0)
+lw x5 TMP(x0)
+sw x5 DST(x0)
+addi x6 x0 1
+sw x1 DST(x6)
+addi x6 x0 2
+sw x3 DST(x6)
+addi x6 x0 3
+sw x4 DST(x6)
