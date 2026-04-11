@@ -3,14 +3,26 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+compiler="$repo_root/compiler.py"
 
 simulator=""
-if [[ -x "$script_dir/../main" ]]; then
-    simulator="$script_dir/../main"
-elif [[ -x "$script_dir/../main.exe" ]]; then
-    simulator="$script_dir/../main.exe"
+if [[ -x "$repo_root/main" ]]; then
+    simulator="$repo_root/main"
+elif [[ -x "$repo_root/main.exe" ]]; then
+    simulator="$repo_root/main.exe"
 else
     echo "Could not find simulator executable. Expected 'main' or 'main.exe' in the repository root." >&2
+    exit 1
+fi
+
+if [[ ! -f "$compiler" ]]; then
+    echo "Could not find compiler.py in the repository root." >&2
+    exit 1
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is required to preprocess test files." >&2
     exit 1
 fi
 
@@ -49,10 +61,31 @@ for test_file in code*.txt; do
         continue
     fi
 
+    prepared_file="$(mktemp)"
+    actual_raw_file="$(mktemp)"
     actual_file="$(mktemp)"
     expected_file="$(mktemp)"
+    error_file="$(mktemp)"
 
-    "$simulator" "$test_file" | normalize_lines > "$actual_file"
+    cp "$test_file" "$prepared_file"
+
+    if ! python3 "$compiler" "$prepared_file" >"$error_file" 2>&1; then
+        echo "$(basename "$test_file"): PREPROCESS FAIL"
+        sed 's/^/  /' "$error_file" >&2
+        status=1
+        rm -f "$prepared_file" "$actual_raw_file" "$actual_file" "$expected_file" "$error_file"
+        continue
+    fi
+
+    if ! "$simulator" "$prepared_file" >"$actual_raw_file" 2>"$error_file"; then
+        echo "$(basename "$test_file"): EXEC FAIL"
+        sed 's/^/  /' "$error_file" >&2
+        status=1
+        rm -f "$prepared_file" "$actual_raw_file" "$actual_file" "$expected_file" "$error_file"
+        continue
+    fi
+
+    normalize_lines < "$actual_raw_file" > "$actual_file"
     convert_answer "$answer_file" | normalize_lines > "$expected_file"
 
     if diff -u "$expected_file" "$actual_file" >/dev/null 2>&1; then
@@ -62,7 +95,7 @@ for test_file in code*.txt; do
         status=1
     fi
 
-    rm -f "$actual_file" "$expected_file"
+    rm -f "$prepared_file" "$actual_raw_file" "$actual_file" "$expected_file" "$error_file"
 done
 
 exit "$status"
