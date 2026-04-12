@@ -498,107 +498,105 @@ void Processor::stageCommit() {
         return;
     }
 
-    while (!rob_order.empty()) {
-        int tag = rob_order.front();
-        auto it = rob_table.find(tag);
-        if (it == rob_table.end()) {
-            rob_order.pop_front();
-            continue;
-        }
+    int tag = rob_order.front();
+    auto it = rob_table.find(tag);
+    if (it == rob_table.end()) {
+        rob_order.pop_front();
+        return;
+    }
 
-        ROBEntry &e = it->second;
-        if (!e.ready) {
-            logEvent("Commit: waiting on ROB " + std::to_string(tag));
-            break;
-        }
+    ROBEntry &e = it->second;
+    if (!e.ready) {
+        logEvent("Commit: waiting on ROB " + std::to_string(tag));
+        return;
+    }
 
-        // Precise exception handling: the exception is only architecturally raised here.
-        if (e.has_exception) {
-            logEvent("Commit: exception from ROB " + std::to_string(tag) + ", flushing speculation");
+    // Precise exception handling: the exception is only architecturally raised here.
+    if (e.has_exception) {
+        logEvent("Commit: exception from ROB " + std::to_string(tag) + ", flushing speculation");
+        exception = true;
+        pc = e.pc;
+        flushAll();
+        return;
+    }
+
+    if (e.inst.op == OpCode::LW) {
+        if (e.dest != 0) {
+            ARF[e.dest] = e.value;
+            if (RAT[e.dest] == tag) {
+                RAT[e.dest] = -1;
+            }
+        }
+        logEvent(
+            "Commit: ROB " + std::to_string(tag) +
+            " wrote x" + std::to_string(e.dest) +
+            "=" + std::to_string(e.value)
+        );
+    } else if (e.inst.op == OpCode::SW) {
+        if (e.addr < 0 || e.addr >= (int)Memory.size()) {
+            logEvent("Commit: store address out of bounds at ROB " + std::to_string(tag));
             exception = true;
             pc = e.pc;
             flushAll();
             return;
         }
+        Memory[e.addr] = e.store_data;
+        logEvent(
+            "Commit: ROB " + std::to_string(tag) +
+            " stored M[" + std::to_string(e.addr) +
+            "]=" + std::to_string(e.store_data)
+        );
+    } else if (isBranchOp(e.inst.op)) {
+        bool was_correct = (e.actual_target == e.predicted_target);
+        bp.update(e.pc, e.actual_target, e.branch_taken, was_correct);
 
-        if (e.inst.op == OpCode::LW) {
-            if (e.dest != 0) {
-                ARF[e.dest] = e.value;
-                if (RAT[e.dest] == tag) {
-                    RAT[e.dest] = -1;
+        if (!was_correct) {
+            // Roll back younger speculative renames in reverse program order.
+            std::vector<int> younger_tags;
+            for (auto it2 = std::next(rob_order.begin()); it2 != rob_order.end(); ++it2) {
+                younger_tags.push_back(*it2);
+            }
+            for (auto rit = younger_tags.rbegin(); rit != younger_tags.rend(); ++rit) {
+                auto jt = rob_table.find(*rit);
+                if (jt == rob_table.end()) continue;
+                const ROBEntry &y = jt->second;
+                if (y.dest != 0 && y.dest >= 0 && RAT[y.dest] == y.tag) {
+                    RAT[y.dest] = y.prev_rename;
                 }
             }
-            logEvent(
-                "Commit: ROB " + std::to_string(tag) +
-                " wrote x" + std::to_string(e.dest) +
-                "=" + std::to_string(e.value)
-            );
-        } else if (e.inst.op == OpCode::SW) {
-            if (e.addr < 0 || e.addr >= (int)Memory.size()) {
-                logEvent("Commit: store address out of bounds at ROB " + std::to_string(tag));
-                exception = true;
-                pc = e.pc;
-                flushAll();
-                return;
-            }
-            Memory[e.addr] = e.store_data;
-            logEvent(
-                "Commit: ROB " + std::to_string(tag) +
-                " stored M[" + std::to_string(e.addr) +
-                "]=" + std::to_string(e.store_data)
-            );
-        } else if (isBranchOp(e.inst.op)) {
-            bool was_correct = (e.actual_target == e.predicted_target);
-            bp.update(e.pc, e.actual_target, e.branch_taken, was_correct);
 
-            if (!was_correct) {
-                // Roll back younger speculative renames in reverse program order.
-                std::vector<int> younger_tags;
-                for (auto it2 = std::next(rob_order.begin()); it2 != rob_order.end(); ++it2) {
-                    younger_tags.push_back(*it2);
-                }
-                for (auto rit = younger_tags.rbegin(); rit != younger_tags.rend(); ++rit) {
-                    auto jt = rob_table.find(*rit);
-                    if (jt == rob_table.end()) continue;
-                    const ROBEntry &y = jt->second;
-                    if (y.dest != 0 && y.dest >= 0 && RAT[y.dest] == y.tag) {
-                        RAT[y.dest] = y.prev_rename;
-                    }
-                }
-
-                // Remove the branch itself and flush all younger speculation.
-                rob_table.erase(it);
-                rob_order.pop_front();
-                flushSpeculationPreserveRAT();
-                pc = e.actual_target;
-                squash_rest_of_cycle = true;
-                logEvent(
-                    "Commit: branch mispredict at ROB " + std::to_string(tag) +
-                    ", redirect pc=" + std::to_string(e.actual_target)
-                );
-                return;
-            }
-            logEvent("Commit: branch at ROB " + std::to_string(tag) + " was correct");
-        } else if (e.inst.op == OpCode::J) {
-            // No additional architectural action required.
-            logEvent("Commit: jump at ROB " + std::to_string(tag));
-        } else if (writesRegister(e.inst.op)) {
-            if (e.dest != 0) {
-                ARF[e.dest] = e.value;
-                if (RAT[e.dest] == tag) {
-                    RAT[e.dest] = -1;
-                }
-            }
+            // Remove the branch itself and flush all younger speculation.
+            rob_table.erase(it);
+            rob_order.pop_front();
+            flushSpeculationPreserveRAT();
+            pc = e.actual_target;
+            squash_rest_of_cycle = true;
             logEvent(
-                "Commit: ROB " + std::to_string(tag) +
-                " wrote x" + std::to_string(e.dest) +
-                "=" + std::to_string(e.value)
+                "Commit: branch mispredict at ROB " + std::to_string(tag) +
+                ", redirect pc=" + std::to_string(e.actual_target)
             );
+            return;
         }
-
-        rob_table.erase(it);
-        rob_order.pop_front();
+        logEvent("Commit: branch at ROB " + std::to_string(tag) + " was correct");
+    } else if (e.inst.op == OpCode::J) {
+        // No additional architectural action required.
+        logEvent("Commit: jump at ROB " + std::to_string(tag));
+    } else if (writesRegister(e.inst.op)) {
+        if (e.dest != 0) {
+            ARF[e.dest] = e.value;
+            if (RAT[e.dest] == tag) {
+                RAT[e.dest] = -1;
+            }
+        }
+        logEvent(
+            "Commit: ROB " + std::to_string(tag) +
+            " wrote x" + std::to_string(e.dest) +
+            "=" + std::to_string(e.value)
+        );
     }
+
+    rob_table.erase(it);
+    rob_order.pop_front();
 }
 
 bool Processor::hasPendingWork() const {
@@ -654,9 +652,9 @@ bool Processor::step() {
         squash_rest_of_cycle = false;
         return hasPendingWork();
     }
-    stageExecuteAndBroadcast();
     stageDecode();
     stageFetch();
+    stageExecuteAndBroadcast();
     enforceX0Zero();
 
     return hasPendingWork();
