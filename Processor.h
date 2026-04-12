@@ -43,6 +43,8 @@ public:
     LoadStoreQueue *lsq;
     BranchPredictor bp;
 
+    std::ofstream log_file;
+
     ProcessorConfig config;
 
     Processor(ProcessorConfig &cfg);
@@ -57,6 +59,7 @@ public:
     void stageCommit();
     bool step();
     void dumpArchitecturalState();
+    void setupLogging();
 
 private:
     std::vector<BroadcastEvent> pending_cdb;
@@ -75,4 +78,5 @@ private:
     bool hasPendingWork() const;
     int resolveLoadValueFromOlderStores(int load_tag, int addr, int default_value) const;
     void enforceX0Zero();
+    void logEvent(const std::string &message);
 };

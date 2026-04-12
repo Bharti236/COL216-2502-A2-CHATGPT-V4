@@ -1,3 +1,5 @@
 main
 .codex
 Todo.md
+logs/
+*.log

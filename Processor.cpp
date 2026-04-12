@@ -1,8 +1,40 @@
 #include "Processor.h"
 #include "AssemblyLoader.h"
 
+#include <chrono>
+#include <ctime>
+#include <filesystem>
 #include <stdexcept>
 #include <limits>
+
+namespace {
+const char *opcodeName(OpCode op) {
+    switch (op) {
+        case OpCode::ADD: return "ADD";
+        case OpCode::SUB: return "SUB";
+        case OpCode::ADDI: return "ADDI";
+        case OpCode::MUL: return "MUL";
+        case OpCode::DIV: return "DIV";
+        case OpCode::REM: return "REM";
+        case OpCode::LW: return "LW";
+        case OpCode::SW: return "SW";
+        case OpCode::BEQ: return "BEQ";
+        case OpCode::BNE: return "BNE";
+        case OpCode::BLT: return "BLT";
+        case OpCode::BLE: return "BLE";
+        case OpCode::J: return "J";
+        case OpCode::SLT: return "SLT";
+        case OpCode::SLTI: return "SLTI";
+        case OpCode::AND: return "AND";
+        case OpCode::OR: return "OR";
+        case OpCode::XOR: return "XOR";
+        case OpCode::ANDI: return "ANDI";
+        case OpCode::ORI: return "ORI";
+        case OpCode::XORI: return "XORI";
+    }
+    return "UNKNOWN";
+}
+}
 
 Processor::Processor(ProcessorConfig &cfg) : config(cfg) {
     pc = 0;
@@ -87,6 +119,8 @@ void Processor::flush() {
 }
 
 void Processor::loadProgram(const std::string &filename) {
+    setupLogging();
+
     // Reset machine state so loadProgram can be called more than once safely.
     pc = 0;
     clock_cycle = 0;
@@ -111,6 +145,7 @@ void Processor::loadProgram(const std::string &filename) {
     inst_memory = std::move(program.inst_memory);
     Memory = std::move(program.memory);
     enforceX0Zero();
+    logEvent("Loaded program: " + filename + " (" + std::to_string(inst_memory.size()) + " instructions)");
 }
 
 void Processor::enqueueToUnit(const RSEntry &e) {
@@ -166,9 +201,18 @@ bool Processor::operandReady(int reg, int &val, int &tag) {
 }
 
 void Processor::stageFetch() {
-    if (exception) return;
-    if (fetch_buffer_valid) return;
-    if (pc < 0 || pc >= (int)inst_memory.size()) return;
+    if (exception) {
+        logEvent("Fetch: skipped because exception is set");
+        return;
+    }
+    if (fetch_buffer_valid) {
+        logEvent("Fetch: stalled because fetch buffer is occupied");
+        return;
+    }
+    if (pc < 0 || pc >= (int)inst_memory.size()) {
+        logEvent("Fetch: no instruction to fetch");
+        return;
+    }
 
     Instruction inst = inst_memory[pc];
     inst.pc = pc;
@@ -185,13 +229,29 @@ void Processor::stageFetch() {
         fetch_buffer_pred_pc = pc + 1;
         pc = fetch_buffer_pred_pc;
     }
+
+    logEvent(
+        "Fetch: pc=" + std::to_string(inst.pc) +
+        " op=" + opcodeName(inst.op) +
+        " predicted_next_pc=" + std::to_string(fetch_buffer_pred_pc)
+    );
 }
 
 void Processor::stageDecode() {
-    if (!fetch_buffer_valid || exception) return;
+    if (exception) {
+        logEvent("Decode: skipped because exception is set");
+        return;
+    }
+    if (!fetch_buffer_valid) {
+        logEvent("Decode: no fetched instruction");
+        return;
+    }
     const Instruction &inst = fetch_buffer_inst;
 
-    if ((int)rob_order.size() >= config.rob_size) return; // stall
+    if ((int)rob_order.size() >= config.rob_size) {
+        logEvent("Decode: stalled because ROB is full");
+        return;
+    }
 
     bool can_issue = true;
     if (inst.op == OpCode::LW || inst.op == OpCode::SW) {
@@ -210,10 +270,16 @@ void Processor::stageDecode() {
         can_issue = !units[0].rsFull(config.adder_rs_size);
     }
 
-    if (!can_issue) return;
+    if (!can_issue) {
+        logEvent(std::string("Decode: stalled because target queue is full for ") + opcodeName(inst.op));
+        return;
+    }
 
     int tag = allocateROB(inst);
-    if (tag == -1) return;
+    if (tag == -1) {
+        logEvent("Decode: failed to allocate ROB entry");
+        return;
+    }
 
     ROBEntry *rob = getROB(tag);
     rob->inst = inst;
@@ -225,6 +291,10 @@ void Processor::stageDecode() {
         rob->actual_target = inst.pc + inst.imm;
         rob->predicted_target = rob->actual_target;
         fetch_buffer_valid = false;
+        logEvent(
+            "Decode: issued pc=" + std::to_string(inst.pc) +
+            " op=J to ROB " + std::to_string(tag)
+        );
         return;
     }
 
@@ -244,6 +314,11 @@ void Processor::stageDecode() {
         operandReady(inst.src2, e.Vk, e.Qk);
         enqueueToUnit(e);
         fetch_buffer_valid = false;
+        logEvent(
+            "Decode: issued pc=" + std::to_string(inst.pc) +
+            " op=" + opcodeName(inst.op) +
+            " to ROB " + std::to_string(tag)
+        );
         return;
     }
 
@@ -265,6 +340,10 @@ void Processor::stageDecode() {
             RAT[inst.dest] = tag;
         }
         fetch_buffer_valid = false;
+        logEvent(
+            "Decode: issued pc=" + std::to_string(inst.pc) +
+            " op=LW to ROB " + std::to_string(tag)
+        );
         return;
     }
 
@@ -281,6 +360,10 @@ void Processor::stageDecode() {
         operandReady(inst.src2, e.Vk, e.Qk); // base address
         lsq->addEntry(e);
         fetch_buffer_valid = false;
+        logEvent(
+            "Decode: issued pc=" + std::to_string(inst.pc) +
+            " op=SW to ROB " + std::to_string(tag)
+        );
         return;
     }
 
@@ -311,9 +394,18 @@ void Processor::stageDecode() {
 
     enqueueToUnit(e);
     fetch_buffer_valid = false;
+    logEvent(
+        "Decode: issued pc=" + std::to_string(inst.pc) +
+        " op=" + opcodeName(inst.op) +
+        " to ROB " + std::to_string(tag)
+    );
 }
 
 void Processor::broadcastOnCDB() {
+    if (pending_cdb.empty()) {
+        logEvent("Broadcast: no results this cycle");
+    }
+
     for (const auto &ev : pending_cdb) {
         auto *re = getROB(ev.rob_tag);
         if (!re) continue; // flushed already
@@ -321,6 +413,7 @@ void Processor::broadcastOnCDB() {
         if (ev.has_exception) {
             re->has_exception = true;
             re->ready = true;
+            logEvent("Broadcast: ROB " + std::to_string(ev.rob_tag) + " raised an exception");
             continue;
         }
 
@@ -332,16 +425,30 @@ void Processor::broadcastOnCDB() {
         if (ev.has_value) {
             re->value = broadcast_value;
             re->ready = true;
+            logEvent(
+                "Broadcast: ROB " + std::to_string(ev.rob_tag) +
+                " value=" + std::to_string(broadcast_value)
+            );
         }
         if (ev.has_store) {
             re->addr = ev.addr;
             re->store_data = ev.store_data;
             re->ready = true;
+            logEvent(
+                "Broadcast: ROB " + std::to_string(ev.rob_tag) +
+                " store addr=" + std::to_string(ev.addr) +
+                " data=" + std::to_string(ev.store_data)
+            );
         }
         if (ev.has_branch) {
             re->branch_taken = ev.branch_taken;
             re->actual_target = ev.actual_target;
             re->ready = true;
+            logEvent(
+                "Broadcast: ROB " + std::to_string(ev.rob_tag) +
+                " branch taken=" + std::to_string(ev.branch_taken ? 1 : 0) +
+                " target=" + std::to_string(ev.actual_target)
+            );
         }
 
         if (ev.has_value) {
@@ -354,7 +461,10 @@ void Processor::broadcastOnCDB() {
 
 void Processor::stageExecuteAndBroadcast() {
     pending_cdb.clear();
-    if (exception) return;
+    if (exception) {
+        logEvent("Execute: skipped because exception is set");
+        return;
+    }
 
     for (auto &u : units) {
         auto out = u.executeCycle(clock_cycle);
@@ -365,11 +475,25 @@ void Processor::stageExecuteAndBroadcast() {
         pending_cdb.insert(pending_cdb.end(), out.begin(), out.end());
     }
 
+    if (pending_cdb.empty()) {
+        logEvent("Execute: no unit finished this cycle");
+    } else {
+        logEvent("Execute: " + std::to_string(pending_cdb.size()) + " result(s) ready for broadcast");
+    }
+
     broadcastOnCDB();
 }
 
 void Processor::stageCommit() {
-    if (exception) return;
+    if (exception) {
+        logEvent("Commit: skipped because exception is already set");
+        return;
+    }
+
+    if (rob_order.empty()) {
+        logEvent("Commit: ROB empty");
+        return;
+    }
 
     while (!rob_order.empty()) {
         int tag = rob_order.front();
@@ -381,11 +505,13 @@ void Processor::stageCommit() {
 
         ROBEntry &e = it->second;
         if (!e.ready) {
+            logEvent("Commit: waiting on ROB " + std::to_string(tag));
             break;
         }
 
         // Precise exception handling: the exception is only architecturally raised here.
         if (e.has_exception) {
+            logEvent("Commit: exception from ROB " + std::to_string(tag) + ", flushing speculation");
             exception = true;
             pc = e.pc;
             flushAll();
@@ -399,14 +525,25 @@ void Processor::stageCommit() {
                     RAT[e.dest] = -1;
                 }
             }
+            logEvent(
+                "Commit: ROB " + std::to_string(tag) +
+                " wrote x" + std::to_string(e.dest) +
+                "=" + std::to_string(e.value)
+            );
         } else if (e.inst.op == OpCode::SW) {
             if (e.addr < 0 || e.addr >= (int)Memory.size()) {
+                logEvent("Commit: store address out of bounds at ROB " + std::to_string(tag));
                 exception = true;
                 pc = e.pc;
                 flushAll();
                 return;
             }
             Memory[e.addr] = e.store_data;
+            logEvent(
+                "Commit: ROB " + std::to_string(tag) +
+                " stored M[" + std::to_string(e.addr) +
+                "]=" + std::to_string(e.store_data)
+            );
         } else if (isBranchOp(e.inst.op)) {
             bool was_correct = (e.actual_target == e.predicted_target);
             bp.update(e.pc, e.actual_target, e.branch_taken, was_correct);
@@ -431,10 +568,16 @@ void Processor::stageCommit() {
                 rob_order.pop_front();
                 flushSpeculationPreserveRAT();
                 pc = e.actual_target;
+                logEvent(
+                    "Commit: branch mispredict at ROB " + std::to_string(tag) +
+                    ", redirect pc=" + std::to_string(e.actual_target)
+                );
                 return;
             }
+            logEvent("Commit: branch at ROB " + std::to_string(tag) + " was correct");
         } else if (e.inst.op == OpCode::J) {
             // No additional architectural action required.
+            logEvent("Commit: jump at ROB " + std::to_string(tag));
         } else if (writesRegister(e.inst.op)) {
             if (e.dest != 0) {
                 ARF[e.dest] = e.value;
@@ -442,6 +585,11 @@ void Processor::stageCommit() {
                     RAT[e.dest] = -1;
                 }
             }
+            logEvent(
+                "Commit: ROB " + std::to_string(tag) +
+                " wrote x" + std::to_string(e.dest) +
+                "=" + std::to_string(e.value)
+            );
         }
 
         rob_table.erase(it);
@@ -492,6 +640,8 @@ void Processor::enforceX0Zero() {
 
 bool Processor::step() {
     clock_cycle++;
+    logEvent("");
+    logEvent("===== Cycle " + std::to_string(clock_cycle) + " =====");
 
     stageCommit();
     stageExecuteAndBroadcast();
@@ -512,4 +662,33 @@ void Processor::dumpArchitecturalState() {
         std::cout << "EXCEPTION raised by instruction " << pc + 1 << std::endl;
     }
     std::cout << "Branch Predictor Stats: " << bp.correct_predictions << "/" << bp.total_branches << " correct.\n";
+}
+
+void Processor::setupLogging() {
+    namespace fs = std::filesystem;
+
+    if (log_file.is_open()) {
+        log_file.close();
+    }
+
+    if (!fs::exists("logs")) {
+        fs::create_directory("logs");
+    }
+
+    auto now = std::chrono::system_clock::now();
+    auto in_time_t = std::chrono::system_clock::to_time_t(now);
+
+    std::stringstream ss;
+    ss << "logs/run_" << std::put_time(std::localtime(&in_time_t), "%Y%m%d_%H%M%S") << ".log";
+    std::string filename = ss.str();
+
+    log_file.open(filename);
+    if (log_file.is_open()) {
+        log_file << "Simulation started in " << filename << "\n";
+    }
+}
+
+void Processor::logEvent(const std::string &message) {
+    if (!log_file.is_open()) return;
+    log_file << message << "\n";
 }
