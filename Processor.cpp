@@ -15,7 +15,7 @@ Processor::Processor(ProcessorConfig &cfg) : config(cfg) {
     units.emplace_back(UnitType::ADDER, config.add_lat, config.adder_rs_size);
     units.emplace_back(UnitType::MULTIPLIER, config.mul_lat, config.mult_rs_size);
     units.emplace_back(UnitType::DIVIDER, config.div_lat, config.div_rs_size);
-    units.emplace_back(UnitType::BRANCH, 1, config.br_rs_size);
+    units.emplace_back(UnitType::BRANCH, config.add_lat, config.br_rs_size); // branch lat to be assumed equal to add lat as instructed
     units.emplace_back(UnitType::LOGIC, config.logic_lat, config.logic_rs_size);
     lsq = new LoadStoreQueue(config.mem_lat, config.lsq_rs_size);
 }
@@ -146,6 +146,13 @@ bool Processor::operandReady(int reg, int &val, int &tag) {
     }
 
     auto *re = getROB(producer);
+    if (!re) {
+        RAT[reg] = -1;
+        val = ARF[reg];
+        tag = -1;
+        return true;
+    }
+
     if (re && re->ready && !re->has_exception) {
         val = re->value;
         tag = -1;
@@ -252,7 +259,10 @@ void Processor::stageDecode() {
         operandReady(inst.src1, e.Vj, e.Qj); // base register
         lsq->addEntry(e);
 
-        if (inst.dest != 0) RAT[inst.dest] = tag;
+        if (inst.dest != 0) {
+            rob->prev_rename = RAT[inst.dest];
+            RAT[inst.dest] = tag;
+        }
         fetch_buffer_valid = false;
         return;
     }
@@ -364,7 +374,9 @@ void Processor::stageCommit() {
         }
 
         ROBEntry &e = it->second;
-        if (!e.ready) break;
+        if (!e.ready) {
+            break;
+        }
 
         // Precise exception handling: the exception is only architecturally raised here.
         if (e.has_exception) {
@@ -375,9 +387,11 @@ void Processor::stageCommit() {
         }
 
         if (e.inst.op == OpCode::LW) {
-            if (e.dest != 0 && RAT[e.dest] == tag) {
+            if (e.dest != 0) {
                 ARF[e.dest] = e.value;
-                RAT[e.dest] = -1;
+                if (RAT[e.dest] == tag) {
+                    RAT[e.dest] = -1;
+                }
             }
         } else if (e.inst.op == OpCode::SW) {
             if (e.addr < 0 || e.addr >= (int)Memory.size()) {
@@ -416,9 +430,11 @@ void Processor::stageCommit() {
         } else if (e.inst.op == OpCode::J) {
             // No additional architectural action required.
         } else if (writesRegister(e.inst.op)) {
-            if (e.dest != 0 && RAT[e.dest] == tag) {
+            if (e.dest != 0) {
                 ARF[e.dest] = e.value;
-                RAT[e.dest] = -1;
+                if (RAT[e.dest] == tag) {
+                    RAT[e.dest] = -1;
+                }
             }
         }
 

@@ -65,8 +65,8 @@ std::vector<BroadcastEvent> LoadStoreQueue::executeCycle(std::vector<int> &Memor
     has_result = false;
     has_exception = false;
 
-    // Strictly in-order execution: only the head may enter the pipeline.
-    if (pipeline.empty() && !entries.empty()) {
+    // Memory operations still enter in-order, but the memory unit itself is pipelined.
+    if (!entries.empty()) {
         const auto &e = entries.front();
         bool ready = false;
         if (e.op == OpCode::LW) {
@@ -88,7 +88,7 @@ std::vector<BroadcastEvent> LoadStoreQueue::executeCycle(std::vector<int> &Memor
         op.remaining--;
     }
 
-    if (!pipeline.empty()) {
+    while (!pipeline.empty() && pipeline.front().remaining <= 0) {
         auto op = pipeline.front();
         pipeline.pop_front();
         if (op.remaining <= 0) {
@@ -96,8 +96,6 @@ std::vector<BroadcastEvent> LoadStoreQueue::executeCycle(std::vector<int> &Memor
             finished.push_back(ev);
             has_result = has_result || ev.has_value || ev.has_store;
             has_exception = has_exception || ev.has_exception;
-        } else {
-            pipeline.push_front(op);
         }
     }
 
