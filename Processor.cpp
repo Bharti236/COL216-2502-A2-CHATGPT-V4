@@ -125,6 +125,7 @@ void Processor::loadProgram(const std::string &filename) {
     pc = 0;
     clock_cycle = 0;
     exception = false;
+    squash_rest_of_cycle = false;
     std::fill(ARF.begin(), ARF.end(), 0);
     std::fill(Memory.begin(), Memory.end(), 0);
     std::fill(RAT.begin(), RAT.end(), -1);
@@ -485,6 +486,8 @@ void Processor::stageExecuteAndBroadcast() {
 }
 
 void Processor::stageCommit() {
+    squash_rest_of_cycle = false;
+
     if (exception) {
         logEvent("Commit: skipped because exception is already set");
         return;
@@ -568,6 +571,7 @@ void Processor::stageCommit() {
                 rob_order.pop_front();
                 flushSpeculationPreserveRAT();
                 pc = e.actual_target;
+                squash_rest_of_cycle = true;
                 logEvent(
                     "Commit: branch mispredict at ROB " + std::to_string(tag) +
                     ", redirect pc=" + std::to_string(e.actual_target)
@@ -644,6 +648,12 @@ bool Processor::step() {
     logEvent("===== Cycle " + std::to_string(clock_cycle) + " =====");
 
     stageCommit();
+    if (squash_rest_of_cycle) {
+        logEvent("Cycle control: stopping remaining stages after branch redirect");
+        enforceX0Zero();
+        squash_rest_of_cycle = false;
+        return hasPendingWork();
+    }
     stageExecuteAndBroadcast();
     stageDecode();
     stageFetch();

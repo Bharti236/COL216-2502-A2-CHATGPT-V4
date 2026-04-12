@@ -44,6 +44,7 @@ public:
     BranchPredictor bp;
 
     std::ofstream log_file;
+    bool squash_rest_of_cycle = false;
 
     ProcessorConfig config;
 
