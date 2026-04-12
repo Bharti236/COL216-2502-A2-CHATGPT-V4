@@ -1,4 +1,0 @@
-.A: 7
-addi x1 x0 1024
-lw x2 A(x1)
-addi x3 x0 1
