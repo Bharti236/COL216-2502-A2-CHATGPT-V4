@@ -1,5 +1,7 @@
 #include "LoadStoreQueue.h"
 
+#include <algorithm>
+
 LoadStoreQueue::LoadStoreQueue(int lat, int rs_size) : latency(lat) {
     entries.reserve(rs_size);
 }
@@ -44,6 +46,7 @@ BroadcastEvent LoadStoreQueue::computeResult(const LSQEntry &e, std::vector<int>
             ev.has_exception = true;
             return ev;
         }
+        ev.addr = (int)addr;
         ev.has_value = true;
         ev.value = Memory[(size_t)addr];
     } else {
@@ -65,9 +68,19 @@ std::vector<BroadcastEvent> LoadStoreQueue::executeCycle(std::vector<int> &Memor
     has_result = false;
     has_exception = false;
 
-    // Memory operations still enter in-order, but the memory unit itself is pipelined.
-    if (!entries.empty()) {
-        const auto &e = entries.front();
+    // Memory operations still enter in-order, but the LSQ slot is only
+    // released once the memory operation has completed.
+    int candidate_idx = -1;
+    for (int i = 0; i < (int)entries.size(); ++i) {
+        if (!entries[i].busy) continue;
+        if (!entries[i].executing) {
+            candidate_idx = i;
+            break;
+        }
+    }
+
+    if (candidate_idx != -1) {
+        const auto &e = entries[candidate_idx];
         bool ready = false;
         if (e.op == OpCode::LW) {
             ready = (e.Qj == -1);
@@ -79,7 +92,7 @@ std::vector<BroadcastEvent> LoadStoreQueue::executeCycle(std::vector<int> &Memor
             op.entry = e;
             op.remaining = latency;
             pipeline.push_back(op);
-            entries.erase(entries.begin());
+            entries[candidate_idx].executing = true;
         }
     }
 
@@ -96,6 +109,13 @@ std::vector<BroadcastEvent> LoadStoreQueue::executeCycle(std::vector<int> &Memor
             finished.push_back(ev);
             has_result = has_result || ev.has_value || ev.has_store;
             has_exception = has_exception || ev.has_exception;
+
+            auto lsq_it = std::find_if(entries.begin(), entries.end(), [&](const LSQEntry &entry) {
+                return entry.rob_tag == op.entry.rob_tag;
+            });
+            if (lsq_it != entries.end()) {
+                entries.erase(lsq_it);
+            }
         }
     }
 

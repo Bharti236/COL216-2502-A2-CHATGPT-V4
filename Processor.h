@@ -73,4 +73,6 @@ private:
     void enqueueToUnit(const RSEntry &e);
     bool operandReady(int reg, int &val, int &tag);
     bool hasPendingWork() const;
+    int resolveLoadValueFromOlderStores(int load_tag, int addr, int default_value) const;
+    void enforceX0Zero();
 };

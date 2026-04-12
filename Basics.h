@@ -69,6 +69,7 @@ struct ROBEntry {
 // Reservation-station entry for ALU-style units.
 struct RSEntry {
     bool busy = false;
+    bool executing = false;
     OpCode op = OpCode::ADD;
     int rob_tag = -1;
     int dest = -1;
@@ -83,6 +84,7 @@ struct RSEntry {
 // Reservation-station entry for the LSQ.
 struct LSQEntry {
     bool busy = false;
+    bool executing = false;
     OpCode op = OpCode::LW;
     int rob_tag = -1;
     int dest = -1;

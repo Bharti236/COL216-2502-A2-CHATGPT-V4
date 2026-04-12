@@ -78,7 +78,7 @@ void Processor::flushSpeculationPreserveRAT() {
 void Processor::flushAll() {
     flushSpeculationPreserveRAT();
     std::fill(RAT.begin(), RAT.end(), -1);
-    if (!RAT.empty()) RAT[0] = -1;
+    enforceX0Zero();
 }
 
 void Processor::flush() {
@@ -94,7 +94,7 @@ void Processor::loadProgram(const std::string &filename) {
     std::fill(ARF.begin(), ARF.end(), 0);
     std::fill(Memory.begin(), Memory.end(), 0);
     std::fill(RAT.begin(), RAT.end(), -1);
-    if (!RAT.empty()) RAT[0] = -1;
+    enforceX0Zero();
     inst_memory.clear();
     rob_order.clear();
     rob_table.clear();
@@ -110,6 +110,7 @@ void Processor::loadProgram(const std::string &filename) {
     ProgramImage program = AssemblyLoader::load(filename, config.mem_size);
     inst_memory = std::move(program.inst_memory);
     Memory = std::move(program.memory);
+    enforceX0Zero();
 }
 
 void Processor::enqueueToUnit(const RSEntry &e) {
@@ -323,8 +324,13 @@ void Processor::broadcastOnCDB() {
             continue;
         }
 
+        int broadcast_value = ev.value;
+        if (ev.has_value && re->inst.op == OpCode::LW) {
+            broadcast_value = resolveLoadValueFromOlderStores(ev.rob_tag, ev.addr, ev.value);
+        }
+
         if (ev.has_value) {
-            re->value = ev.value;
+            re->value = broadcast_value;
             re->ready = true;
         }
         if (ev.has_store) {
@@ -339,8 +345,8 @@ void Processor::broadcastOnCDB() {
         }
 
         if (ev.has_value) {
-            for (auto &u : units) u.capture(ev.rob_tag, ev.value);
-            if (lsq) lsq->capture(ev.rob_tag, ev.value);
+            for (auto &u : units) u.capture(ev.rob_tag, broadcast_value);
+            if (lsq) lsq->capture(ev.rob_tag, broadcast_value);
         }
     }
     pending_cdb.clear();
@@ -455,6 +461,35 @@ bool Processor::hasPendingWork() const {
     return false;
 }
 
+int Processor::resolveLoadValueFromOlderStores(int load_tag, int addr, int default_value) const {
+    int value = default_value;
+
+    for (int tag : rob_order) {
+        if (tag == load_tag) break;
+
+        auto it = rob_table.find(tag);
+        if (it == rob_table.end()) continue;
+
+        const ROBEntry &entry = it->second;
+        if (entry.inst.op != OpCode::SW) continue;
+        if (!entry.ready || entry.has_exception) continue;
+        if (entry.addr != addr) continue;
+
+        value = entry.store_data;
+    }
+
+    return value;
+}
+
+void Processor::enforceX0Zero() {
+    if (!ARF.empty()) {
+        ARF[0] = 0;
+    }
+    if (!RAT.empty()) {
+        RAT[0] = -1;
+    }
+}
+
 bool Processor::step() {
     clock_cycle++;
 
@@ -462,6 +497,7 @@ bool Processor::step() {
     stageExecuteAndBroadcast();
     stageDecode();
     stageFetch();
+    enforceX0Zero();
 
     return hasPendingWork();
 }

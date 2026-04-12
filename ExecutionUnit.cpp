@@ -1,5 +1,7 @@
 #include "ExecutionUnit.h"
 
+#include <algorithm>
+
 ExecutionUnit::ExecutionUnit(UnitType t, int lat, int rs_size) : name(t), latency(lat) {
     rs.reserve(rs_size);
 }
@@ -119,12 +121,14 @@ std::vector<BroadcastEvent> ExecutionUnit::executeCycle(int current_cycle) {
     has_result = false;
     has_exception = false;
 
-    // Issue at most one oldest-ready entry per cycle.
+    // Issue at most one oldest-ready entry per cycle. The RS slot remains
+    // occupied until the operation has actually completed.
     int best_idx = -1;
     int best_age = INT_MAX;
     for (int i = 0; i < (int)rs.size(); ++i) {
         const auto &e = rs[i];
         if (!e.busy) continue;
+        if (e.executing) continue;
         if (e.Qj != -1 || e.Qk != -1) continue;
         if (e.insert_cycle >= current_cycle) continue; // do not execute in same cycle as decode
         if (e.age < best_age) {
@@ -138,7 +142,7 @@ std::vector<BroadcastEvent> ExecutionUnit::executeCycle(int current_cycle) {
         op.entry = rs[best_idx];
         op.remaining = latency;
         pipeline.push_back(op);
-        rs.erase(rs.begin() + best_idx);
+        rs[best_idx].executing = true;
     }
 
     // Advance pipeline.
@@ -156,6 +160,13 @@ std::vector<BroadcastEvent> ExecutionUnit::executeCycle(int current_cycle) {
             finished.push_back(ev);
             has_result = has_result || ev.has_value || ev.has_branch;
             has_exception = has_exception || ev.has_exception;
+
+            auto rs_it = std::find_if(rs.begin(), rs.end(), [&](const RSEntry &entry) {
+                return entry.rob_tag == op.entry.rob_tag;
+            });
+            if (rs_it != rs.end()) {
+                rs.erase(rs_it);
+            }
         } else {
             still_active.push_back(op);
         }
